@@ -1,0 +1,47 @@
+def get_kubernetes_student_cloud() {
+  def cloudName;
+  withFolderProperties {
+    cloudName = env.CLOUD_ENV
+  }
+  return cloudName
+}
+
+pipeline {
+    parameters {
+        string(name: 'RELEASE_VERSION', defaultValue: '', description: 'release version')
+    }
+    agent {
+      kubernetes {
+        cloud get_kubernetes_student_cloud()
+        yamlFile 'agent/jenkins-kaniko-agent.yaml'
+      }
+    }
+    stages {
+        stage('Deploy to Production') {
+            steps {
+                checkout([$class: 'GitSCM',
+                    branches: [[name: 'refs/tags/release-' + params.RELEASE_VERSION]],
+                    doGenerateSubmoduleConfigurations: false,
+                    extensions: [],
+                    submoduleCfg: [],
+                    userRemoteConfigs: [[credentialsId: 'jenkins-bot31', url: env.GIT_URL]]])
+                withCredentials([file(credentialsId:'aws-users-production-access', variable:'FILE')]) {
+                    sh 'echo "deploying to production"'
+                    sh 'chmod 400 $FILE'
+                    sh 'cat deployScript.sh | sed "s/{VERSION}/${RELEASE_VERSION}/g" | sed "s/{PROFILE}/production/g" > deploymentScript.sh'
+                    sh 'ssh -tt -i $FILE -o UserKnownHostsFile=known_hosts ec2-user@ec2-52-72-139-211.compute-1.amazonaws.com < deploymentScript.sh'
+                }
+            }
+        }
+        stage('Tag Production deployment') {
+            environment {
+                GIT_AUTH = credentials('jenkins-bot31')
+            }
+            steps {
+                sh 'git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"'
+                sh 'git tag production-${BUILD_NUMBER}'
+                sh 'git push --tags'
+            }
+        }
+    }
+}
